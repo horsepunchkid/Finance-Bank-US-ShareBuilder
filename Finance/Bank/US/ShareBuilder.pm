@@ -6,55 +6,52 @@ use Carp 'croak';
 use LWP::UserAgent;
 use HTTP::Cookies;
 use Date::Parse;
+use DateTime;
 use Data::Dumper;
+use Finance::OFX::Parse;
+use Locale::Currency::Format;
 
 =pod
 
 =head1 NAME
 
-Finance::Bank::US::INGDirect - Check balances and transactions for US INGDirect accounts
+Finance::Bank::US::ShareBuilder - Check positions and transactions for US ShareBuilder investment accounts
 
 =head1 VERSION
 
-Version 0.06
+Version 0.01
 
 =cut
 
-our $VERSION = '0.06';
+our $VERSION = '0.01';
 
 =head1 SYNOPSIS
 
-  use Finance::Bank::US::INGDirect;
-  use Finance::OFX::Parse::Simple;
+  use Finance::Bank::US::ShareBuilder;
 
-  my $ing = Finance::Bank::US::INGDirect->new(
-      saver_id => '...',
-      customer => '########',
-      questions => {
-          # Your questions may differ; examine the form to find them
-          'AnswerQ1.4' => '...', # In what year was your mother born?
-          'AnswerQ1.5' => '...', # In what year was your father born?
-          'AnswerQ1.8' => '...', # What is the name of your hometown newspaper?
-      },
-      pin => '########',
+  my $sb = Finance::Bank::US::ShareBuilder->new(
+    username => 'XXXXX', # Saver ID or customer number
+    password => 'XXXXXXXXXX',
+    image => 'I*******.jpg', # The filename of your verification image
+    phrase => 'XXXXXXXXXXXXXX', # Verification phrase
   );
 
-  my $parser = Finance::OFX::Parse::Simple->new;
-  my @txs = @{$parser->parse_scalar($ing->recent_transactions)};
-  my %accounts = $ing->accounts;
-
-  for (@txs) {
-      print "Account: $_->{account_id}\n";
-      printf "%s %-50s %8.2f\n", $_->{date}, $_->{name}, $_->{amount} for @{$_->{transactions}};
-      print "\n";
+  my %accounts = $sb->accounts;
+  for(keys %accounts) {
+      printf "%10s %-15s %11s\n", $_, $accounts{$_}{nickname},
+          '$'.sprintf('%.2f', $accounts{$_}{balance});
   }
+  $sb->print_positions($sb->positions);
 
 =head1 DESCRIPTION
 
-This module provides methods to access data from US INGdirect accounts,
-including account balances and recent transactions in OFX format (see
-Finance::OFX and related modules). It also provides a method to transfer
-money from one account to another on a given date.
+This module provides methods to access data from US ShareBuilder accounts,
+including positions and recent transactions, which can be provided in OFX
+format (see Finance::OFX) or in parsed lists.
+
+There is no support yet for executing transactions. Code for listing sell
+transactions was written by analogy based on the OFX spec and has not
+been tested, due to a lack of data.
 
 =cut
 
@@ -64,10 +61,9 @@ my $base = 'https://www.sharebuilder.com/sharebuilder';
 
 =head1 METHODS
 
-=head2 new( saver_id => '...', customer => '...', questions => {...}, pin => '...' )
+=head2 new( username => '...', password => '...', image => '...', phrase => '...' )
 
-Return an object that can be used to retrieve account balances and statements.
-See SYNOPSIS for examples of challenge questions.
+Return an object that can be used to retrieve positions and transactions.
 
 =cut
 
@@ -120,6 +116,7 @@ sub _login {
     $self->{_account_screen} = $response->content;
 }
 
+# Pull ASP junk from current page to use for the next HTTP POST
 sub _update_asp_junk {
     my ($self, $response) = @_;
 
@@ -135,6 +132,7 @@ sub _update_asp_junk {
     $self->{_asp_junk}{__EVENTVALIDATION}   =~ s/.*id="__EVENTVALIDATION" value="(.*?)".*/$1/;
 }
 
+# Trim down ASP junk to whatever is necessary for POSTing
 sub _get_asp_junk {
     my ($self) = @_;
 
@@ -152,8 +150,7 @@ sub _get_asp_junk {
 
 Retrieve a list of accounts:
 
-  ( '####' => [ number => '####', type => 'Orange Savings', nickname => '...',
-                available => ###.##, balance => ###.## ],
+  ( '####' => { number => '####', type => '...', nickname => '...', balance => ###.## },
     ...
   )
 
@@ -273,19 +270,55 @@ sub positions {
 
 =pod
 
+=head2 print_positions( @positions )
+
+Pretty-print a set of positions as returned by positions().
+
+=cut
+
+sub print_positions {
+    my ($self, @positions) = @_;
+    for(@positions) {
+        printf "%-8s  % 9.4f * %7s = %9s ; %-4s %9s (%7s) from %9s\n",
+            $_->{symbol}, $_->{quantity}, usd($_->{quote}), usd($_->{value}),
+            $_->{change} =~ /-/ ? 'down' : 'up', usd($_->{change}), "$_->{change_pct}%", usd($_->{basis});
+    }
+}
+
+=pod
+
 =head2 recent_transactions( $account, $days )
 
 Retrieve a list of transactions in OFX format for the given account
-(default: all accounts) for the past number of days (default: 30).
+for the past number of days (default: 30).
 
 =cut
 
 sub recent_transactions {
     my ($self, $account, $days) = @_;
 
-    print "Getting transactions for [$account]...\n";
-
     $days ||= 30;
+
+    my $to = DateTime->today;
+    my $from = $to->clone->add(days => -$days);
+
+    $self->transactions($account, $from->ymd('-'), $to->ymd('-'));
+}
+
+=pod
+
+=head2 transactions( $account, $from, $to )
+
+Retrieve a list of transactions in OFX format for the given account
+in the given time frame (default: past three months).
+
+=cut
+
+sub transactions {
+    my ($self, $account, $from, $to) = @_;
+
+    $to   = $to   ? DateTime->from_epoch(epoch => str2time($to))   : DateTime->today;
+    $from = $from ? DateTime->from_epoch(epoch => str2time($from)) : $to->clone->add(months => -6);
 
     my $response = $self->{ua}->get("$base/Account/Records/History.aspx");
     $self->_update_asp_junk($response);
@@ -295,9 +328,7 @@ sub recent_transactions {
     $self->{ua}->default_header(Referer => "$base/Account/Records/History.aspx");
     $response = $self->{ua}->post("$base/Account/Records/History.aspx", [
         $c.'ddlAccount' => $account,
-        $c.'txtDateRange' => '11/01/2010 to 05/08/2011',
-        $c.'txtDateRangeChoice' => 'Last 6 Months',
-        $c.'txtTodayFromServer' => '05/08/2011',
+        $c.'txtDateRange' => $from->mdy('/').' to '.$to->mdy('/'),
         $c.'ddlShow' => 'ALL',
         $c.'btnView' => 'ctl00$ctl00$MainContent$MainContent$uc',
         $self->_get_asp_junk,
@@ -305,13 +336,9 @@ sub recent_transactions {
     #print "{{{\n" .Dumper($response). "\n}}}\n\n";
     $self->_update_asp_junk($response);
 
-    sleep 2;
-
     $response = $self->{ua}->post("$base/Account/Records/History.aspx", [
         'ctl00$ctl00$MainContent$MainContent$ucView$c$views$c$ddlAccount' => $account,
-        'ctl00$ctl00$MainContent$MainContent$ucView$c$views$c$txtDateRange' => '11/01/2010 to 05/08/2011',
-        'ctl00$ctl00$MainContent$MainContent$ucView$c$views$c$txtDateRangeChoice' => 'Last 6 Months',
-        'ctl00$ctl00$MainContent$MainContent$ucView$c$views$c$txtTodayFromServer' => '05/08/2011',
+        'ctl00$ctl00$MainContent$MainContent$ucView$c$views$c$txtDateRange' => $from->mdy('/').' to '.$to->mdy('/'),
         'ctl00$ctl00$MainContent$MainContent$ucView$c$views$c$ddlShow' => 'ALL',
         'ctl00$ctl00$MainContent$MainContent$ucView$c$views$c$ddlFinancialSoftware' => 'OFX',
         'ctl00$ctl00$MainContent$MainContent$ucView$c$views$c$btnDownload' => 'ctl00$ctl00$MainContent$MainContent$ucView$c$views$c$btnDownload',
@@ -326,6 +353,8 @@ sub recent_transactions {
 
     if($ofx =~ /Unable to process transaction/) {
         croak "OFX returned, but with a failure.";
+        $ofx =~ s/></>\n</g;
+        print Dumper($ofx);
     }
 
     $ofx
@@ -333,116 +362,115 @@ sub recent_transactions {
 
 =pod
 
-=head2 transactions( $account, $from, $to )
+=head2 transaction_list( $account, $from, $to )
 
-Retrieve a list of transactions in OFX format for the given account
-(default: all accounts) in the given time frame (default: pretty far in the
-past to pretty far in the future).
+Return transactions as a list instead of as OFX.
 
 =cut
 
-sub transactions {
+sub transaction_list {
     my ($self, $account, $from, $to) = @_;
 
-    $account ||= 'ALL';
-    $from ||= '2000-01-01';
-    $to ||= '2038-01-01';
+    my $ofx = $self->transactions($account, $from, $to);
 
-    my @from = strptime($from);
-    my @to = strptime($to);
+    my $tree = Finance::OFX::Parse::parse($ofx);
 
-    $from[4]++;
-    $to[4]++;
-    $from[5] += 1900;
-    $to[5] += 1900;
+    my %secmap = map { $_->{secinfo}{secid}{uniqueid} => $_->{secinfo}{ticker} }
+        @{$tree->{ofx}{seclistmsgsrsv1}{seclist}{stockinfo}};
 
-    my $response = $self->{ua}->post("$base/download.qfx", [
-        type => 'OFX',
-        TIMEFRAME => 'VARIABLE',
-        account => $account,
-        startDate => sprintf("%02d/%02d/%d", @from[4,3,5]),
-        endDate   => sprintf("%02d/%02d/%d", @to[4,3,5]),
-    ]);
-    $response->is_success or croak "OFX download failed.";
+    my $invlist = $tree->{ofx}{invstmtmsgsrsv1}{invstmttrnrs}{invstmtrs}{invtranlist};
+    my @buys  = @{$invlist->{buystock}}  if $invlist->{buystock};
+    my @sells = @{$invlist->{sellstock}} if $invlist->{sellstock};
+    my @reinvests = @{$invlist->{reinvest}} if $invlist->{reinvest};
 
-    $response->content;
+    my @txns;
+
+    for(@buys) {
+        my %txn;
+
+        $txn{type} = 'buy';
+        $txn{symbol} = $secmap{$_->{invbuy}{secid}{uniqueid}};
+        $txn{date} = DateTime->from_epoch(epoch => $_->{invbuy}{invtran}{dttrade})->ymd('-');
+        $txn{total} = 0 - $_->{invbuy}{total};
+        $txn{commission} = $_->{invbuy}{commission};
+        $txn{cost_per_share} = $_->{invbuy}{unitprice};
+        $txn{quantity} = $_->{invbuy}{units};
+
+        push @txns, \%txn;
+    }
+
+    for(@sells) {
+        my %txn;
+
+        $txn{type} = 'sell';
+        $txn{symbol} = $secmap{$_->{invsell}{secid}{uniqueid}};
+        $txn{date} = DateTime->from_epoch(epoch => $_->{invsell}{invtran}{dttrade})->ymd('-');
+        $txn{total} = 0 - $_->{invsell}{total};
+        $txn{commission} = $_->{invsell}{commission};
+        $txn{cost_per_share} = $_->{invsell}{unitprice};
+        $txn{quantity} = $_->{invsell}{units};
+
+        push @txns, \%txn;
+    }
+
+    for(@reinvests) {
+        my %txn;
+
+        $txn{type} = 'reinvest';
+        $txn{symbol} = $secmap{$_->{secid}{uniqueid}};
+        $txn{date} = DateTime->from_epoch(epoch => $_->{invtran}{dttrade})->ymd('-');
+        $txn{total} = 0 - $_->{total};
+        $txn{commission} = $_->{commission}; # Should be zero
+        $txn{cost_per_share} = $_->{unitprice};
+        $txn{quantity} = $_->{units};
+
+        push @txns, \%txn;
+    }
+
+    @txns
 }
 
 =pod
 
-=head2 transfer( $from, $to, $amount, $when )
+=head2 print_transactions( @txns )
 
-Transfer money from one account number to another on the given date
-(default: immediately). Returns the confirmation number. Use at your
-own risk.
+Pretty-print a set of transactions as returned by transaction_list().
 
 =cut
 
-sub transfer {
-    my ($self, $from, $to, $amount, $when) = @_;
-    my $type = $when ? 'SCHEDULED' : 'NOW';
-
-    if($when) {
-        my @when = strptime($when);
-        $when[4]++;
-        $when[5] += 1900;
-        $when = sprintf("%02d/%02d/%d", @when[4,3,5]);
+sub print_transactions {
+    my ($self, @txns) = @_;
+    for(sort { $b->{date} cmp $a->{date} } @txns) {
+        printf "%10s %-8s %-6s %10s - %6s = %9.4f * %9s\n", $_->{date}, $_->{type}, $_->{symbol},
+            usd($_->{total}), usd($_->{commission}), $_->{quantity}, usd($_->{cost_per_share});
     }
-
-    my $response = $self->{ua}->get("$base/INGDirect/money_transfer.vm");
-    my ($page_token) = map { s/^.*value="(.*?)".*$/$1/; $_ }
-        grep /<input.*name="pageToken"/,
-        split('\n', $response->content);
-
-    $response = $self->{ua}->post("$base/INGDirect/deposit_transfer_input.vm", [
-        pageToken => $page_token,
-        action => 'continue',
-        amount => $amount,
-        sourceAccountNumber => $from,
-        destinationAccountNumber => $to,
-        depositTransferType => $type,
-        $when ? (scheduleDate => $when) : (),
-    ]);
-    $response->is_redirect or croak "Transfer setup failed.";
-
-    $response = $self->{ua}->get("$base/INGDirect/deposit_transfer_validate.vm");
-    ($page_token) = map { s/^.*value="(.*?)".*$/$1/; $_ }
-        grep /<input.*name="pageToken"/,
-        split('\n', $response->content);
-
-    $response = $self->{ua}->post("$base/INGDirect/deposit_transfer_validate.vm", [
-        pageToken => $page_token,
-        action => 'submit',
-    ]);
-    $response->is_redirect or croak "Transfer validation failed. Check your account!";
-
-    $response = $self->{ua}->get("$base/INGDirect/deposit_transfer_confirmation.vm");
-    $response->is_success or croak "Transfer confirmation failed. Check your account!";
-    my ($confirmation) = map { s/^.*Number">(\d+)<.*$/$1/; $_ }
-        grep /<span.*id="confirmationNumber">/,
-        split('\n', $response->content);
-
-    $confirmation;
 }
 
-1;
+=pod
+
+=head2 usd( $dollars )
+
+Shortcut to format a floating point amount as dollars (dollar sign, commas, and two decimal places).
+
+=cut
+
+sub usd { currency_format('USD', $_[0], FMT_SYMBOL) }
 
 =pod
 
 =head1 AUTHOR
 
 This version by Steven N. Severinghaus <sns-perl@severinghaus.org>
-with contributions by Robert Spier.
 
 =head1 COPYRIGHT
 
-Copyright (c) 2010 Steven N. Severinghaus. All rights reserved. This
+Copyright (c) 2011 Steven N. Severinghaus. All rights reserved. This
 program is free software; you can redistribute it and/or modify it under
 the same terms as Perl itself.
 
 =head1 SEE ALSO
 
-Finance::Bank::INGDirect, Finance::OFX::Parse::Simple
+Finance::Bank::US::INGDirect, Finance::OFX::Parse
 
 =cut
 
