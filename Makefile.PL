@@ -17,6 +17,7 @@ WriteMakefile(
         'HTTP::Cookies' => 0,
         'Date::Parse' => 0,
         'DateTime' => 0,
+        'HTML::TableExtract' => 0,
         'Data::Dumper' => 0,
         'Finance::OFX::Parse' => 0,
         'Locale::Currency::Format' => 0,

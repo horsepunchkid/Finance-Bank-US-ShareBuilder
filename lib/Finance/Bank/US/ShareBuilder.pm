@@ -7,6 +7,7 @@ use LWP::UserAgent;
 use HTTP::Cookies;
 use Date::Parse;
 use DateTime;
+use HTML::TableExtract;
 use Data::Dumper;
 use Finance::OFX::Parse;
 use Locale::Currency::Format;
@@ -223,7 +224,6 @@ sub positions {
     $response = $self->{ua}->get("$base/account/portfolio/positions.aspx");
     $response->is_success or croak "OFX download failed.";
 
-    use HTML::TableExtract;
     my $te  = new HTML::TableExtract( headers=>['Symbol', 'Description', 'Quote',
         'Day Change', 'Quantity', 'Market Value', 'Cost / Share',
         'Cost Basis', 'Gain or Loss']);
