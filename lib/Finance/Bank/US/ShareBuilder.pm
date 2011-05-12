@@ -318,7 +318,7 @@ sub transactions {
     my ($self, $account, $from, $to) = @_;
 
     $to   = $to   ? DateTime->from_epoch(epoch => str2time($to))   : DateTime->today;
-    $from = $from ? DateTime->from_epoch(epoch => str2time($from)) : $to->clone->add(months => -6);
+    $from = $from ? DateTime->from_epoch(epoch => str2time($from)) : $to->clone->add(months => -3);
 
     my $response = $self->{ua}->get("$base/Account/Records/History.aspx");
     $self->_update_asp_junk($response);
