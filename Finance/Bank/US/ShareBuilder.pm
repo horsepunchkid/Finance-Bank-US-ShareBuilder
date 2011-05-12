@@ -84,39 +84,38 @@ sub new {
 sub _login {
     my ($self) = @_;
 
-    my $response = $self->{ua}->get("$base/Login.aspx");
+    my $response = $self->{ua}->get("$base/authentication/signin.aspx");
     $self->_update_asp_junk($response);
 
-    $response = $self->{ua}->post("$base/Login.aspx", [
-        __EVENTTARGET => 'nextViewPostBack',
+    $self->{ua}->default_header(Referer => "$base/authentication/signin.aspx");
+    $response = $self->{ua}->post("$base/authentication/signin.aspx", [
         $self->_get_asp_junk,
+        'ctl00$ctl00$MainContent$MainContent$ucView$c$views$c$ucUsername$ctl01$txtUsername' => $self->{username},
+        'ctl00$ctl00$MainContent$MainContent$ucView$c$views$c$ucUsername$ctl01$btnSignIn' => 'ctl00$ctl00$MainContent$MainContent$ucView$c$views$c$ucUsername$ctl01$btnSignIn',
     ]);
     $self->_update_asp_junk($response);
 
-    $response = $self->{ua}->post("$base/Authentication/SignIn.aspx", [
-        'ctl00$ctl00$Content$Content$ucSignInWorkflowView$view$ucUsername$UsernameRow$txtUsername' => $self->{username},
-        'ctl00$ctl00$Content$Content$ctrlDeviceInformation$hdnDevicePrint' => 'version=1&pm_fpua=perl&pm_fpsc=24|1920|1200|1200&pm_fpsw=&pm_fptz=-4&pm_fpln=lang=en-US|syslang=|userlang=&pm_fpjv=0&pm_fpco=0',
-        'ctl00$ctl00$Content$Content$ucSignInWorkflowView$view$ucUsername$UsernameRow$btnSignIn' => 'Sign+In',
+    $self->{ua}->default_header(Referer => "$base/authentication/signin.aspx");
+    $response = $self->{ua}->post("$base/authentication/signin.aspx", [
+        __EVENTTARGET => 'ctl00$ctl00$MainContent$MainContent$ucView$c$views$c$nextViewPostBack',
         $self->_get_asp_junk,
     ]);
     $self->_update_asp_junk($response);
 
     my @lines = split /\n/, $response->content;
-    my $image_check  = grep { /img.*?VerifyImagePhrase_ctl00_WebImage1.*?ii=$self->{image}/ } @lines;
-    my $phrase_check = grep { /VerifyImagePhrase_SecurityPhrase.*?$self->{phrase}/ } @lines;
+    my $image_check  = grep { /img.*?SelectedSecurityImage.*?ii=$self->{image}/ } @lines;
+    my $phrase_check = grep { /\Q$self->{phrase}\E/ } @lines;
 
     $image_check && $phrase_check or croak "Couldn't verify authenticity of login page.";
 
-    $response = $self->{ua}->post("$base/Authentication/SignIn.aspx", [
-        'ctl00$ctl00$Content$Content$ctrlDeviceInformation$hdnDevicePrint' => 'version=1&pm_fpua=perl&pm_fpsc=24|1920|1200|1200&pm_fpsw=&pm_fptz=-4&pm_fpln=lang=en-US|syslang=|userlang=&pm_fpjv=0&pm_fpco=0',
-        'ctl00$ctl00$Content$Content$ucSignInWorkflowView$view$ucPassword$UsernameRow$txtPassword' => $self->{password},
-        'ctl00$ctl00$Content$Content$ucSignInWorkflowView$view$ucPassword$rowLoginLocations$ddlLoginLocation$ddlLoginLocations' => 'Home.aspx',
-        'ctl00$ctl00$Content$Content$ucSignInWorkflowView$view$ctl07' => 'Sign+In',
-        %{$self->{_asp_junk}},
+    $response = $self->{ua}->post("$base/authentication/signin.aspx", [
+        $self->_get_asp_junk,
+        'ctl00$ctl00$MainContent$MainContent$ucView$c$views$c$ctl08$txtPassword' => $self->{password},
+        'ctl00$ctl00$MainContent$MainContent$ucView$c$views$c$btnNext' => 'ctl00$ctl00$MainContent$MainContent$uc',
     ]);
     $self->_update_asp_junk($response);
 
-    $response = $self->{ua}->get("$base/Home.aspx");
+    $response = $self->{ua}->get("$base/account/overview.aspx");
     $self->_update_asp_junk($response);
     $self->{_account_screen} = $response->content;
 }
@@ -127,10 +126,12 @@ sub _update_asp_junk {
     my @lines = split /\n/, $response->content;
 
     ($self->{_asp_junk}{__VIEWSTATE})       = grep { /id="__VIEWSTATE"/       } @lines;
-    ($self->{_asp_junk}{__MVCSTATE})        = grep { /id="__MVCSTATE"/        } @lines;
     ($self->{_asp_junk}{__EVENTVALIDATION}) = grep { /id="__EVENTVALIDATION"/ } @lines;
+    my %codes = map { /id="([0-9a-f]{32}|\{[0-9A-F-]{36}\})"\s+value="([^"]+)"/ ? ($1=>$2) : () }
+        grep { /id="[0-9a-f]{32}|\{[0-9A-F-]{36}\}"/ } @lines;
+    $self->{_asp_junk}{$_} = $codes{$_} for keys %codes;
+
     $self->{_asp_junk}{__VIEWSTATE}         =~ s/.*id="__VIEWSTATE" value="(.*?)".*/$1/;
-    $self->{_asp_junk}{__MVCSTATE}          =~ s/.*id="__MVCSTATE" value="(.*?)".*/$1/;
     $self->{_asp_junk}{__EVENTVALIDATION}   =~ s/.*id="__EVENTVALIDATION" value="(.*?)".*/$1/;
 }
 
@@ -161,22 +162,113 @@ Retrieve a list of accounts:
 sub accounts {
     my ($self) = @_;
 
-    my @lines = grep { /_strAccount(Label|Value)">/ } split /\n/, $self->{_account_screen};
+    return %{$self->{_accounts}} if $self->{_accounts};
+
+    my @lines = grep { /ctl00_ctl00_MainContent_MainContent_ucView_c_acctList(Invest|Retire)_acctListRepeater_ctl01_(t\d+|lnkFillBalanceFlyout)/ } split /\n/, $self->{_account_screen};
 
     my %accounts;
     for(my $i=0; $i<@lines; $i++) {
         my %account;
-        $account{number} = $lines[$i];
-        $account{number} =~ s/.*Content_Row(\d+)_str.*/$1/;
-        $account{nickname} = $lines[$i];
-        $account{nickname} =~ s/.*AccountLabel">(.*?)<.*/$1/;
+
+        $account{type} = $lines[$i];
+        $account{type} =~ s/.*c_acctList(Invest|Retire)_acctListRepeater.*/$1/;
         $i++;
+
+        $account{nickname} = $lines[$i];
+        $account{nickname} =~ s/.*>(.*?)<.*/$1/;
+        $i++;
+
+        $account{number} = $lines[$i];
+        $account{number} =~ s/.*>(.*?)<.*/$1/;
+        $i++;
+        $i++;
+
         $account{balance} = $lines[$i];
-        $account{balance} =~ s/.*AccountValue">(.*?)<.*/$1/;
+        $account{balance} =~ s/.*>(.*?)<.*/$1/;
+        $account{balance} =~ s/[\$,]//g;
+        $i++;
+
         $accounts{$account{number}} = \%account;
     }
 
+    $self->{_accounts} = \%accounts;
+
     %accounts;
+}
+
+=pod
+
+=head2 positions( $account )
+
+List positions for an account:
+
+  ( { symbol => 'PERL', description => 'Perl, Inc.', quantity => 3.1416,
+            value => 271.83, quote => 86.52, cost_per_share => 73.12,
+            basis => 229.71, change => 42.12, change_pct => 18.33 }
+    ...
+  )
+
+=cut
+
+sub positions {
+    my ($self, $account) = @_;
+
+    my $response = $self->{ua}->get("$base/account/overview.aspx");
+    $self->_update_asp_junk($response);
+
+    $self->{ua}->default_header(Referer => "$base/account/overview.aspx");
+    $response = $self->{ua}->post("$base/account/overview.aspx", [
+        __EVENTTARGET => 'ctl00$ctl00$MainContent$MainContent$ucView$c$acctQuickLinks$btnPositions',
+        'ctl00$ctl00$MainContent$MainContent$ucView$c$acctQuickLinks$hidAccountNumber' => $account,
+        $self->_get_asp_junk,
+    ]);
+
+    $response = $self->{ua}->get("$base/account/portfolio/positions.aspx");
+    $response->is_success or croak "OFX download failed.";
+
+    use HTML::TableExtract;
+    my $te  = new HTML::TableExtract( headers=>['Symbol', 'Description', 'Quote',
+        'Day Change', 'Quantity', 'Market Value', 'Cost / Share',
+        'Cost Basis', 'Gain or Loss']);
+    $te->parse($response->content);
+
+    my @positions;
+    for my $row ($te->rows)
+    {
+        my %p;
+        (
+            $p{symbol},
+            $p{description},
+            $p{quote},
+            $p{day_change_and_pct},
+            $p{quantity},
+            $p{value},
+            $p{cost_per_share},
+            $p{basis},
+            $p{change_and_pct},
+        ) = map { s/^\s*//; s/\s*$//; $_ } @$row;
+
+        ($p{day_change}, $p{day_change_pct}) = split/[\s\n]+/, $p{day_change_and_pct};
+        delete $p{day_change_and_pct};
+        ($p{change}, $p{change_pct}) = split/[\s\n]+/, $p{change_and_pct};
+        delete $p{change_and_pct};
+
+        $p{day_change}     =~ s/[+\$,%()]//g;
+        $p{day_change_pct} =~ s/[+\$,%()]//g;
+        $p{change}         =~ s/[+\$,%()]//g;
+        $p{change_pct}     =~ s/[+\$,%()]//g;
+        $p{day_change_pct} = '-'.$p{day_change_pct} if $p{day_change} =~ /-/;
+        $p{change_pct}     = '-'.$p{change_pct}     if $p{change}     =~ /-/;
+
+        $p{value}          =~ s/[\$,]//g;
+        $p{quote}          =~ s/[\$,]//g;
+        $p{basis}          =~ s/[\$,]//g;
+        $p{cost_per_share} =~ s/[\$,]//g;
+
+        push @positions, \%p if $p{description};
+    }
+
+    @positions
 }
 
 =pod
@@ -198,40 +290,43 @@ sub recent_transactions {
     my $response = $self->{ua}->get("$base/Account/Records/History.aspx");
     $self->_update_asp_junk($response);
 
+    my $c = 'ctl00$ctl00$MainContent$MainContent$ucView$c$views$c$'; # ASP stupidity
+
+    $self->{ua}->default_header(Referer => "$base/Account/Records/History.aspx");
     $response = $self->{ua}->post("$base/Account/Records/History.aspx", [
-        '__EVENTTARGET' => 'ctl00$ctl00$ContentArea$Content$ctl00$SwitchAccount1$ddlAccountList',
-        'ctl00$ctl00$ContentArea$Content$ctl00$bubbleContainer$ddlExportType' => '',
-        'ctl00$ctl00$HeaderContent$headerControls$txtSearch' => '',
-        'ctl00$ctl00$ContentArea$Content$ctl00$SwitchAccount1$ddlAccountList' => $account,
-        'ctl00$ctl00$ContentArea$Content$ctl00$ddlTimePeriod' => 'Last7Days',
-        'ctl00$ctl00$ContentArea$Content$ctl00$txtFromDate' => '10/08/2010',
-        'ctl00$ctl00$ContentArea$Content$ctl00$txtToDate' => '10/15/2010',
-        'ctl00$ctl00$ContentArea$Content$ctl00$ddlActivityType' => 'ALL',
+        $c.'ddlAccount' => $account,
+        $c.'txtDateRange' => '11/01/2010 to 05/08/2011',
+        $c.'txtDateRangeChoice' => 'Last 6 Months',
+        $c.'txtTodayFromServer' => '05/08/2011',
+        $c.'ddlShow' => 'ALL',
+        $c.'btnView' => 'ctl00$ctl00$MainContent$MainContent$uc',
         $self->_get_asp_junk,
     ]);
+    #print "{{{\n" .Dumper($response). "\n}}}\n\n";
     $self->_update_asp_junk($response);
 
+    sleep 2;
+
     $response = $self->{ua}->post("$base/Account/Records/History.aspx", [
-        'ctl00$ctl00$ContentArea$Content$ctl00$bubbleContainer$ddlExportType' => 'OFX',
-        'ctl00$ctl00$ContentArea$Content$ctl00$bubbleContainer$btnExport' => 'Download',
-        'ctl00$ctl00$ContentArea$Content$ctl00$SwitchAccount1$ddlAccountList' => $account,
-        'ctl00$ctl00$ContentArea$Content$ctl00$ddlTimePeriod' => 'LastMonth',
-        'ctl00$ctl00$ContentArea$Content$ctl00$txtFromDate' => '09/01/2010',
-        'ctl00$ctl00$ContentArea$Content$ctl00$txtToDate' => '09/30/2010',
-        'ctl00$ctl00$ContentArea$Content$ctl00$ddlActivityType' => 'ALL',
-        '__EVENTTARGET' => 'ctl00$ctl00$ContentArea$Content$ctl00$foDownloadActivity',
+        'ctl00$ctl00$MainContent$MainContent$ucView$c$views$c$ddlAccount' => $account,
+        'ctl00$ctl00$MainContent$MainContent$ucView$c$views$c$txtDateRange' => '11/01/2010 to 05/08/2011',
+        'ctl00$ctl00$MainContent$MainContent$ucView$c$views$c$txtDateRangeChoice' => 'Last 6 Months',
+        'ctl00$ctl00$MainContent$MainContent$ucView$c$views$c$txtTodayFromServer' => '05/08/2011',
+        'ctl00$ctl00$MainContent$MainContent$ucView$c$views$c$ddlShow' => 'ALL',
+        'ctl00$ctl00$MainContent$MainContent$ucView$c$views$c$ddlFinancialSoftware' => 'OFX',
+        'ctl00$ctl00$MainContent$MainContent$ucView$c$views$c$btnDownload' => 'ctl00$ctl00$MainContent$MainContent$ucView$c$views$c$btnDownload',
         $self->_get_asp_junk,
     ]);
+    #print "{{{\n" .Dumper($response). "\n}}}\n\n";
     $self->_update_asp_junk($response);
     $response->is_success or croak "OFX download failed.";
-    #print Dumper($response);
 
     my $ofx = $response->content;
     $ofx =~ s/\x0D//g;
 
-    #print "======================================================\n";
-    #print $ofx;
-    #print "======================================================\n";
+    if($ofx =~ /Unable to process transaction/) {
+        croak "OFX returned, but with a failure.";
+    }
 
     $ofx
 }
