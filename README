@@ -1,0 +1,22 @@
+NAME
+
+    Finance::Bank::US::ShareBuilder
+    Check positions and transactions for US ShareBuilder investment accounts
+
+DOCUMENTATION
+
+    After installing, you can find documentation for this module with the
+    perldoc command:
+
+    perldoc Finance::Bank::US::ShareBuilder
+
+COPYRIGHT AND LICENCE
+
+    Copyright (C) 2011 Steven N. Severinghaus <sns-perl@severinghaus.org>
+
+    This program is free software; you can redistribute it and/or modify it
+    under the terms of either: the GNU General Public License as published
+    by the Free Software Foundation; or the Artistic License.
+
+    See http://dev.perl.org/licenses/ for more information.
+
