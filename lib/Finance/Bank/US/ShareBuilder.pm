@@ -87,8 +87,8 @@ sub _login {
     $self->{ua}->default_header(Referer => "$base/authentication/signin.aspx");
     $response = $self->{ua}->post("$base/authentication/signin.aspx", [
         $self->_get_asp_junk,
-        'ctl00$ctl00$MainContent$MainContent$ucView$c$views$c$ucUsername$ctl01$txtUsername' => $self->{username},
-        'ctl00$ctl00$MainContent$MainContent$ucView$c$views$c$ucUsername$ctl01$btnSignIn' => 'ctl00$ctl00$MainContent$MainContent$ucView$c$views$c$ucUsername$ctl01$btnSignIn',
+        'ctl00$ctl00$MainContent$MainContent$ucView$c$views$c$ucUsername$ctl00$txtUsername' => $self->{username},
+        'ctl00$ctl00$MainContent$MainContent$ucView$c$views$c$ucUsername$ctl00$btnSignIn' => 'ctl00$ctl00$MainContent$MainContent$ucView$c$views$c$ucUsername$ctl00$btnSignIn',
     ]);
     $self->_update_asp_junk($response);
 
