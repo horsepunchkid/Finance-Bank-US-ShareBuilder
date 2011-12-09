@@ -381,9 +381,16 @@ sub transaction_list {
         @{$tree->{ofx}{seclistmsgsrsv1}{seclist}{stockinfo}};
 
     my $invlist = $tree->{ofx}{invstmtmsgsrsv1}{invstmttrnrs}{invstmtrs}{invtranlist};
-    my @buys  = @{$invlist->{buystock}}  if $invlist->{buystock};
-    my @sells = @{$invlist->{sellstock}} if $invlist->{sellstock};
-    my @reinvests = @{$invlist->{reinvest}} if $invlist->{reinvest};
+
+    my @buys = ref $invlist->{buystock} eq 'HASH' ? ($invlist->{buystock})
+        : ref $invlist->{buystock} eq 'ARRAY' ? @{$invlist->{buystock}}
+        : ();
+    my @sells = ref $invlist->{sellstock} eq 'HASH' ? ($invlist->{sellstock})
+        : ref $invlist->{sellstock} eq 'ARRAY' ? @{$invlist->{sellstock}}
+        : ();
+    my @reinvests = ref $invlist->{reinvest} eq 'HASH' ? ($invlist->{reinvest})
+        : ref $invlist->{reinvest} eq 'ARRAY' ? @{$invlist->{reinvest}}
+        : ();
 
     my @txns;
 
