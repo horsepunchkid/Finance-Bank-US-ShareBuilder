@@ -329,7 +329,7 @@ sub transactions {
 
     $self->{ua}->default_header(Referer => "$base/Account/Records/History.aspx");
     $response = $self->{ua}->post("$base/Account/Records/History.aspx", [
-        $c.'ddlAccount' => $account,
+        $c.'ddlAccountList' => $account,
         $c.'txtDateRange' => $from->mdy('/').' to '.$to->mdy('/'),
         $c.'ddlShow' => 'ALL',
         $c.'btnView' => 'ctl00$ctl00$MainContent$MainContent$uc',
