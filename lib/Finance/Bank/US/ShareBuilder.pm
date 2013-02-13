@@ -72,7 +72,10 @@ sub new {
     my ($class, %opts) = @_;
     my $self = bless \%opts, $class;
 
-    $self->{ua} ||= LWP::UserAgent->new(cookie_jar => HTTP::Cookies->new);
+    $self->{ua} ||= LWP::UserAgent->new(
+        cookie_jar => HTTP::Cookies->new,
+        ssl_opts => { verify_hostname => 0 },
+    );
 
     $self->_login;
     $self;
@@ -279,7 +282,7 @@ Pretty-print a set of positions as returned by positions().
 sub print_positions {
     my ($self, @positions) = @_;
     for(@positions) {
-        printf "%-8s  % 9.4f * %7s = %9s ; %-4s %9s (%7s) from %9s\n",
+        printf "%-5s  % 9.4f * %7s = %9s ; %-4s %9s (%7s) from %9s\n",
             $_->{symbol}, $_->{quantity}, usd($_->{quote}), usd($_->{value}),
             $_->{change} =~ /-/ ? 'down' : 'up', usd($_->{change}), "$_->{change_pct}%", usd($_->{basis});
     }
@@ -391,6 +394,9 @@ sub transaction_list {
     my @reinvests = ref $invlist->{reinvest} eq 'HASH' ? ($invlist->{reinvest})
         : ref $invlist->{reinvest} eq 'ARRAY' ? @{$invlist->{reinvest}}
         : ();
+    my @income = ref $invlist->{income} eq 'HASH' ? ($invlist->{income})
+        : ref $invlist->{income} eq 'ARRAY' ? @{$invlist->{income}}
+        : ();
 
     my @txns;
 
@@ -436,6 +442,17 @@ sub transaction_list {
         push @txns, \%txn;
     }
 
+    for(@income) {
+        my %txn;
+
+        $txn{type} = $_->{incometype} eq 'DIV' ? 'dividend' : $_->{incometype};
+        $txn{symbol} = $secmap{$_->{secid}{uniqueid}};
+        $txn{date} = DateTime->from_epoch(epoch => $_->{invtran}{dttrade})->ymd('-');
+        $txn{total} = $_->{total};
+
+        push @txns, \%txn;
+    }
+
     @txns
 }
 
@@ -450,6 +467,10 @@ Pretty-print a set of transactions as returned by transaction_list().
 sub print_transactions {
     my ($self, @txns) = @_;
     for(sort { $b->{date} cmp $a->{date} } @txns) {
+        if($_->{type} eq 'dividend') {
+            printf "%10s %-8s %-6s %10s\n", $_->{date}, $_->{type}, $_->{symbol}, usd($_->{total});
+            next;
+        }
         printf "%10s %-8s %-6s %10s - %6s = %9.4f * %9s\n", $_->{date}, $_->{type}, $_->{symbol},
             usd($_->{total}), usd($_->{commission}), $_->{quantity}, usd($_->{cost_per_share});
     }
@@ -482,4 +503,6 @@ the same terms as Perl itself.
 Finance::Bank::US::INGDirect, Finance::OFX::Parse
 
 =cut
+
+1;
 
